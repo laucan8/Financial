@@ -1,0 +1,35 @@
+name: Inject search.js into index.html
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'search.js'
+  workflow_dispatch:
+
+jobs:
+  inject:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Inject search.js script tag
+        run: |
+          if grep -q 'search.js' index.html; then
+            echo "search.js already injected, skipping."
+          else
+            sed -i 's|</body>|<script src="search.js"></script></body>|' index.html
+            echo "Injected search.js into index.html"
+          fi
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git diff --staged --quiet || git commit -m "Auto-inject search.js into index.html"
+          git push
