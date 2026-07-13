@@ -5,58 +5,44 @@
   'use strict';
 
   // Helper: normalize period value from the dropdown
-  // The select option value may be 'FY', 'Q1', 'Q2', 'Q3' etc.
   function normalizePeriod(val) {
     if (!val) return 'Q1';
     val = val.trim();
     if (val === 'FY' || val === 'Full Year' || val === 'Tahunan') return 'Full Year';
-    return val; // Q1, Q2, Q3
+    return val;
   }
 
-  // Period mapping: UI value -> IDX API value
-  const PERIOD_MAP = {
-    'Q1': 'TW1',
-    'Q2': 'TW2',
-    'Q3': 'TW3',
-    'Full Year': 'Tahunan'
-  };
-
-  // Roman numeral for FinancialStatement filename
-  const ROMAN_MAP = {
-    'Q1': 'I',
-    'Q2': 'II',
-    'Q3': 'III',
-    'Full Year': 'Tahunan'
-  };
+  const PERIOD_MAP = { 'Q1': 'TW1', 'Q2': 'TW2', 'Q3': 'TW3', 'Full Year': 'Tahunan' };
+  const ROMAN_MAP  = { 'Q1': 'I',   'Q2': 'II',  'Q3': 'III',  'Full Year': 'Tahunan' };
 
   const IDX_BASE = 'https://www.idx.co.id';
-  const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
 
-  // Prefixes to EXCLUDE - these are not the actual company financial reports
-  const EXCLUDE_PREFIXES = [
-    'financialstatement',
-    'ojk',
-    'esg',
-    'annualreport',
-    'instance',
-    'inlinexbrl',
-    'xbrl'
+  // Multiple CORS proxies to try in order
+  const CORS_PROXIES = [
+    'https://corsproxy.io/?',
+    'https://api.allorigins.win/raw?url=',
+    'https://cors.eu.org/'
   ];
 
-  // Check if a filename is the actual company financial report (not a system file)
+  // Prefixes that indicate a system/template file (NOT the actual company financial report)
+  const EXCLUDE_PREFIXES = [
+    'financialstatement', 'ojk', 'esg', 'annualreport',
+    'instance', 'inlinexbrl', 'xbrl', 'checklist'
+  ];
+
   function isCompanyReport(filename) {
-    const lower = filename.toLowerCase();
-    // Exclude zip files
-    if (lower.endsWith('.zip')) return false;
-    // Exclude xlsx files
-    if (lower.endsWith('.xlsx')) return false;
-    // Must be PDF
+    const lower = (filename || '').toLowerCase();
     if (!lower.endsWith('.pdf')) return false;
-    // Exclude files starting with known system prefixes
     for (const prefix of EXCLUDE_PREFIXES) {
       if (lower.startsWith(prefix)) return false;
     }
     return true;
+  }
+
+  function fixUrl(url) {
+    if (!url) return '#';
+    if (url.startsWith('http')) return url;
+    return IDX_BASE + (url.startsWith('/') ? '' : '/') + url;
   }
 
   function buildApiUrl(ticker, year, period) {
@@ -76,9 +62,36 @@
     return `${IDX_BASE}/Portals/0/StaticData/ListedCompanies/Corporate_Actions/New_Info_JSX/Jenis_Informasi/01_Laporan_Keuangan/02_Soft_Copy_Laporan_Keuangan//${folderYear}/${folder}/${ticker.toUpperCase()}/${filename}`;
   }
 
+  async function tryFetch(url) {
+    const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+
+  async function fetchAttachments(apiUrl) {
+    // Try direct (works if same-origin or server allows CORS)
+    try {
+      const data = await tryFetch(apiUrl);
+      if (data && data.Results && data.Results.length > 0) {
+        return data.Results[0].Attachments || [];
+      }
+    } catch(e) {}
+
+    // Try each CORS proxy in order
+    for (const proxy of CORS_PROXIES) {
+      try {
+        const data = await tryFetch(proxy + encodeURIComponent(apiUrl));
+        if (data && data.Results && data.Results.length > 0) {
+          return data.Results[0].Attachments || [];
+        }
+      } catch(e) {}
+    }
+    return [];
+  }
+
   function showLoading() {
     let overlay = document.getElementById('idx-result-overlay');
-    if (!overlay) { overlay = createOverlay(); }
+    if (!overlay) overlay = createOverlay();
     overlay.style.display = 'flex';
     overlay.innerHTML = `
       <div style="background:#0d1b2a;border-radius:16px;padding:40px;max-width:500px;width:90%;text-align:center;color:#fff;">
@@ -92,14 +105,12 @@
     let overlay = document.getElementById('idx-result-overlay');
     if (!overlay) overlay = createOverlay();
     overlay.style.display = 'flex';
-    const isFullYear = period === 'Full Year';
-    const periodLabel = isFullYear ? 'Annual (Audited)' : period;
-    const fileRows = files.map(f => {
-      return `<div style="display:flex;align-items:center;justify-content:space-between;background:#1a2a3a;border-radius:10px;padding:12px 16px;margin-bottom:8px;">
+    const periodLabel = period === 'Full Year' ? 'Annual (Audited)' : period;
+    const fileRows = files.map(f => `
+      <div style="display:flex;align-items:center;justify-content:space-between;background:#1a2a3a;border-radius:10px;padding:12px 16px;margin-bottom:8px;">
         <span style="color:#cde;font-size:13px;">&#128196;&nbsp;&nbsp;${f.name}</span>
         <a href="${f.url}" target="_blank" style="background:#2a5fd0;color:#fff;padding:6px 14px;border-radius:7px;font-size:12px;text-decoration:none;white-space:nowrap;margin-left:12px;">&#8659; Open</a>
-      </div>`;
-    }).join('');
+      </div>`).join('');
     overlay.innerHTML = `
       <div style="background:#0d1b2a;border-radius:16px;padding:32px;max-width:560px;width:92%;color:#fff;position:relative;">
         <button onclick="document.getElementById('idx-result-overlay').style.display='none'" style="position:absolute;top:16px;right:16px;background:none;border:none;color:#888;font-size:20px;cursor:pointer;">&#215;</button>
@@ -128,84 +139,47 @@
     const overlay = document.createElement('div');
     overlay.id = 'idx-result-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);';
-    overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.style.display = 'none'; });
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.style.display = 'none'; });
     document.body.appendChild(overlay);
     if (!document.getElementById('idx-styles')) {
-      const style = document.createElement('style');
-      style.id = 'idx-styles';
-      style.textContent = '@keyframes idx-spin { to { transform: rotate(360deg); } }';
-      document.head.appendChild(style);
+      const s = document.createElement('style');
+      s.id = 'idx-styles';
+      s.textContent = '@keyframes idx-spin { to { transform: rotate(360deg); } }';
+      document.head.appendChild(s);
     }
     return overlay;
   }
 
-  async function fetchFromApi(apiUrl) {
-    // Try direct call first
-    try {
-      const r = await fetch(apiUrl, { headers: { 'Accept': 'application/json' } });
-      if (r.ok) {
-        const data = await r.json();
-        if (data.Results && data.Results.length > 0) return data.Results[0].Attachments || [];
-      }
-    } catch(e) {}
-    // Try CORS proxy
-    try {
-      const r = await fetch(CORS_PROXY + encodeURIComponent(apiUrl));
-      if (r.ok) {
-        const data = await r.json();
-        if (data.Results && data.Results.length > 0) return data.Results[0].Attachments || [];
-      }
-    } catch(e) {}
-    return [];
-  }
-
   async function searchReport(ticker, year, periodRaw) {
-    if (!ticker || ticker.trim() === '') { showError('Please enter a ticker symbol'); return; }
+    if (!ticker || !ticker.trim()) { showError('Please enter a ticker symbol'); return; }
     const period = normalizePeriod(periodRaw);
     showLoading();
 
-    const apiUrl = buildApiUrl(ticker, year, period);
-    const attachments = await fetchFromApi(apiUrl);
-
+    const attachments = await fetchAttachments(buildApiUrl(ticker, year, period));
     let files = [];
 
     if (attachments.length > 0) {
-      // First priority: actual company financial report PDF (not system files)
-      const companyReports = attachments
+      // Priority 1: actual company financial report PDFs (filter out system files)
+      const companyFiles = attachments
         .filter(a => isCompanyReport(a.File_Name || a.file_name || ''))
-        .map(a => ({ name: a.File_Name || a.file_name || 'file', url: a.File_Path || a.file_path || '#' }));
+        .map(a => ({ name: a.File_Name || a.file_name, url: fixUrl(a.File_Path || a.file_path) }));
 
-      if (companyReports.length > 0) {
-        files = companyReports;
+      if (companyFiles.length > 0) {
+        files = companyFiles;
       } else {
-        // Fallback: take any PDF that is not a zip/xlsx
+        // Priority 2: any PDF from the API
         files = attachments
-          .filter(a => {
-            const name = (a.File_Name || a.file_name || '').toLowerCase();
-            return name.endsWith('.pdf');
-          })
-          .map(a => ({ name: a.File_Name || a.file_name || 'file', url: a.File_Path || a.file_path || '#' }));
+          .filter(a => (a.File_Name || a.file_name || '').toLowerCase().endsWith('.pdf'))
+          .map(a => ({ name: a.File_Name || a.file_name, url: fixUrl(a.File_Path || a.file_path) }));
       }
     }
 
-    // Last resort fallback: use predictable direct URL
+    // Last resort: predictable direct URL (FinancialStatement format)
     if (files.length === 0) {
-      const directUrl = buildFallbackUrl(ticker, year, period);
-      const roman = ROMAN_MAP[period] || 'I';
-      const isFullYear = period === 'Full Year';
-      files = [{
-        name: isFullYear
-          ? `FinancialStatement-${year}-Tahunan-${ticker.toUpperCase()}.pdf`
-          : `FinancialStatement-${year}-${roman}-${ticker.toUpperCase()}.pdf`,
-        url: directUrl
-      }];
+      files = [{ name: 'Open on IDX website', url: 'https://www.idx.co.id/id/perusahaan-tercatat/laporan-keuangan-dan-tahunan' }];
     }
 
-    if (files.length > 0) {
-      showResults(ticker, year, period, files);
-    } else {
-      showError(`No reports found for ${ticker.toUpperCase()} (${period} ${year})`);
-    }
+    showResults(ticker, year, period, files);
   }
 
   function attachEventListeners() {
@@ -223,9 +197,8 @@
         const periodRaw = selects[1] ? selects[1].value : 'Q1';
         searchReport(ticker, year, periodRaw);
       }, true);
-      console.log('[IDX Search] Event listener attached to Search Report button');
+      console.log('[IDX Search] Attached to Search Report button');
     } else {
-      console.warn('[IDX Search] Search Report button not found, retrying...');
       setTimeout(attachEventListeners, 1000);
     }
   }
