@@ -5,12 +5,17 @@ on:
     - cron: '0 1 * * 1'  # Every Monday at 01:00 UTC
   workflow_dispatch:     # Allow manual trigger
 
+permissions:
+  contents: write
+
 jobs:
   cache-reports:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch IDX Reports
         run: |
@@ -43,15 +48,19 @@ jobs:
                   echo "No data for $TICKER $YEAR $PERIOD"
                 fi
                 
-                sleep 0.5
+                sleep 0.3
               done
             done
           done
 
       - name: Commit cache files
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           git add api/
-          git diff --staged --quiet || git commit -m "Update IDX report cache [skip ci]"
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update IDX report cache [skip ci]"
+            git push
+          fi
