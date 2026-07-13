@@ -14,13 +14,11 @@
   // IDX API periode values: tw1, tw2, tw3, audit
   const PERIOD_MAP = { 'Q1': 'tw1', 'Q2': 'tw2', 'Q3': 'tw3', 'Full Year': 'audit' };
   const IDX_BASE = 'https://www.idx.co.id';
-
-  // Cloudflare Worker proxy (primary) + public fallbacks
+  const CACHE_BASE = 'https://laucan8.github.io/Financial/api';
   const CF_WORKER = 'https://idx-proxy.rengga-aditya828.workers.dev';
 
   const CORS_PROXIES = [
     url => `${CF_WORKER}?url=${encodeURIComponent(url)}`,
-    url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
     url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
   ];
 
@@ -43,8 +41,12 @@
 
   function buildApiUrl(ticker, year, period) {
     const idxPeriod = PERIOD_MAP[period] || 'tw1';
-    // Use /primary/ endpoint (not /umbraco/)
     return `${IDX_BASE}/primary/ListedCompany/GetFinancialReport?indexFrom=0&pageSize=10&year=${year}&reportType=rdf&periode=${idxPeriod}&kodeEmiten=${ticker.toUpperCase()}`;
+  }
+
+  function buildCacheUrl(ticker, year, period) {
+    const idxPeriod = PERIOD_MAP[period] || 'tw1';
+    return `${CACHE_BASE}/${ticker.toUpperCase()}_${year}_${idxPeriod}.json`;
   }
 
   async function fetchJSON(url) {
@@ -54,19 +56,33 @@
     return JSON.parse(text);
   }
 
-  async function fetchAttachments(apiUrl) {
-    // Try direct call first
+  async function fetchAttachments(ticker, year, period) {
+    const apiUrl = buildApiUrl(ticker, year, period);
+    const cacheUrl = buildCacheUrl(ticker, year, period);
+
+    // 1. Try cached JSON from GitHub Pages (same-origin, no CORS issues)
+    try {
+      const data = await fetchJSON(cacheUrl);
+      if (data && data.Results && data.Results.length > 0) {
+        console.log('[IDX Search] Served from cache:', cacheUrl);
+        return data.Results[0].Attachments || [];
+      }
+    } catch(e) {}
+
+    // 2. Try direct IDX call
     try {
       const data = await fetchJSON(apiUrl);
       if (data && data.Results && data.Results.length > 0) return data.Results[0].Attachments || [];
     } catch(e) {}
-    // Try proxies (Cloudflare Worker first, then public fallbacks)
+
+    // 3. Try proxies
     for (const proxyFn of CORS_PROXIES) {
       try {
         const data = await fetchJSON(proxyFn(apiUrl));
         if (data && data.Results && data.Results.length > 0) return data.Results[0].Attachments || [];
       } catch(e) {}
     }
+
     return [];
   }
 
@@ -136,7 +152,7 @@
     if (!ticker || !ticker.trim()) { showError('Please enter a ticker symbol'); return; }
     const period = normalizePeriod(periodRaw);
     showLoading();
-    const attachments = await fetchAttachments(buildApiUrl(ticker, year, period));
+    const attachments = await fetchAttachments(ticker, year, period);
     let files = [];
     if (attachments.length > 0) {
       const company = attachments
@@ -146,7 +162,6 @@
         .filter(a => (a.File_Name || a.file_name || '').toLowerCase().endsWith('.pdf'))
         .map(a => ({ name: a.File_Name || a.file_name, url: fixUrl(a.File_Path || a.file_path) }));
     }
-    // All proxies failed - show IDX website link as fallback
     if (files.length === 0) {
       files = [{ name: `View ${ticker.toUpperCase()} reports on IDX website`, url: 'https://www.idx.co.id/id/perusahaan-tercatat/laporan-keuangan-dan-tahunan' }];
     }
@@ -168,7 +183,7 @@
         const periodRaw = selects[1] ? selects[1].value : 'Q1';
         searchReport(ticker, year, periodRaw);
       }, true);
-      console.log('[IDX Search] Attached – CF Worker + correct API endpoint');
+      console.log('[IDX Search] Ready – cache + live fallback');
     } else {
       setTimeout(attachEventListeners, 1000);
     }
