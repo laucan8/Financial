@@ -1,0 +1,57 @@
+name: Cache IDX Financial Reports
+
+on:
+  schedule:
+    - cron: '0 1 * * 1'  # Every Monday at 01:00 UTC
+  workflow_dispatch:     # Allow manual trigger
+
+jobs:
+  cache-reports:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch IDX Reports
+        run: |
+          mkdir -p api
+          
+          # Tickers to pre-cache
+          TICKERS="BBCA BBRI BMRI TLKM ASII UNVR PGEO BRPT ANTM INDF PGAS WSKT ADRO PTBA ICBP KLBF HMSP JPFA CPIN SMGR"
+          YEARS="2024 2025 2026"
+          PERIODS="tw1 tw2 tw3 audit"
+          
+          for TICKER in $TICKERS; do
+            for YEAR in $YEARS; do
+              for PERIOD in $PERIODS; do
+                FILE="api/${TICKER}_${YEAR}_${PERIOD}.json"
+                URL="https://www.idx.co.id/primary/ListedCompany/GetFinancialReport?indexFrom=0&pageSize=10&year=${YEAR}&reportType=rdf&periode=${PERIOD}&kodeEmiten=${TICKER}"
+                
+                echo "Fetching $TICKER $YEAR $PERIOD..."
+                RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                  -H "Accept: application/json" \
+                  -H "Referer: https://www.idx.co.id/" \
+                  --connect-timeout 10 \
+                  --max-time 20 \
+                  "$URL" 2>/dev/null)
+                
+                # Only save if valid JSON with results
+                if echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('Results') else 1)" 2>/dev/null; then
+                  echo "$RESPONSE" > "$FILE"
+                  echo "Saved $FILE"
+                else
+                  echo "No data for $TICKER $YEAR $PERIOD"
+                fi
+                
+                sleep 0.5
+              done
+            done
+          done
+
+      - name: Commit cache files
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add api/
+          git diff --staged --quiet || git commit -m "Update IDX report cache [skip ci]"
+          git push
