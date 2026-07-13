@@ -7,12 +7,12 @@
   function normalizePeriod(val) {
     if (!val) return 'Q1';
     val = val.trim();
-    if (val === 'FY' || val === 'Full Year' || val === 'Tahunan') return 'Full Year';
+    if (val === 'FY' || val === 'Full Year' || val === 'Tahunan' || val === 'Annual') return 'Full Year';
     return val;
   }
 
-  const PERIOD_MAP = { 'Q1': 'TW1', 'Q2': 'TW2', 'Q3': 'TW3', 'Full Year': 'Tahunan' };
-  const ROMAN_MAP  = { 'Q1': 'I',   'Q2': 'II',  'Q3': 'III', 'Full Year': 'Tahunan' };
+  // IDX API periode values: tw1, tw2, tw3, audit
+  const PERIOD_MAP = { 'Q1': 'tw1', 'Q2': 'tw2', 'Q3': 'tw3', 'Full Year': 'audit' };
   const IDX_BASE = 'https://www.idx.co.id';
 
   // Cloudflare Worker proxy (primary) + public fallbacks
@@ -42,8 +42,9 @@
   }
 
   function buildApiUrl(ticker, year, period) {
-    const idxPeriod = PERIOD_MAP[period] || 'TW1';
-    return `${IDX_BASE}/umbraco/Surface/ListedCompany/GetFinancialReport?indexFrom=0&pageSize=10&year=${year}&reportType=rdf&periode=${idxPeriod.toLowerCase()}&kodeEmiten=${ticker.toUpperCase()}`;
+    const idxPeriod = PERIOD_MAP[period] || 'tw1';
+    // Use /primary/ endpoint (not /umbraco/)
+    return `${IDX_BASE}/primary/ListedCompany/GetFinancialReport?indexFrom=0&pageSize=10&year=${year}&reportType=rdf&periode=${idxPeriod}&kodeEmiten=${ticker.toUpperCase()}`;
   }
 
   async function fetchJSON(url) {
@@ -167,7 +168,7 @@
         const periodRaw = selects[1] ? selects[1].value : 'Q1';
         searchReport(ticker, year, periodRaw);
       }, true);
-      console.log('[IDX Search] Attached – CF Worker proxy enabled');
+      console.log('[IDX Search] Attached – CF Worker + correct API endpoint');
     } else {
       setTimeout(attachEventListeners, 1000);
     }
