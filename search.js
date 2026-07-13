@@ -32,17 +32,42 @@
   const IDX_BASE = 'https://www.idx.co.id';
   const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
 
-  function buildApiUrl(ticker, year, period) {
-    const idxPeriod = PERIOD_MAP[period] || 'TW1';
-    const url = `${IDX_BASE}/umbraco/Surface/ListedCompany/GetFinancialReport?indexFrom=0&pageSize=10&year=${year}&reportType=rdf&periode=${idxPeriod.toLowerCase()}&kodeEmiten=${ticker.toUpperCase()}`;
-    return url;
+  // Prefixes to EXCLUDE - these are not the actual company financial reports
+  const EXCLUDE_PREFIXES = [
+    'financialstatement',
+    'ojk',
+    'esg',
+    'annualreport',
+    'instance',
+    'inlinexbrl',
+    'xbrl'
+  ];
+
+  // Check if a filename is the actual company financial report (not a system file)
+  function isCompanyReport(filename) {
+    const lower = filename.toLowerCase();
+    // Exclude zip files
+    if (lower.endsWith('.zip')) return false;
+    // Exclude xlsx files
+    if (lower.endsWith('.xlsx')) return false;
+    // Must be PDF
+    if (!lower.endsWith('.pdf')) return false;
+    // Exclude files starting with known system prefixes
+    for (const prefix of EXCLUDE_PREFIXES) {
+      if (lower.startsWith(prefix)) return false;
+    }
+    return true;
   }
 
-  function buildDirectPdfUrl(ticker, year, period) {
+  function buildApiUrl(ticker, year, period) {
+    const idxPeriod = PERIOD_MAP[period] || 'TW1';
+    return `${IDX_BASE}/umbraco/Surface/ListedCompany/GetFinancialReport?indexFrom=0&pageSize=10&year=${year}&reportType=rdf&periode=${idxPeriod.toLowerCase()}&kodeEmiten=${ticker.toUpperCase()}`;
+  }
+
+  function buildFallbackUrl(ticker, year, period) {
     const idxPeriod = PERIOD_MAP[period] || 'TW1';
     const roman = ROMAN_MAP[period] || 'I';
     const folderYear = `Laporan%20Keuangan%20Tahun%20${year}`;
-    // Full Year uses 'Audit' folder; quarterly uses TW1/TW2/TW3 folder
     const isFullYear = period === 'Full Year';
     const folder = isFullYear ? 'Audit' : idxPeriod;
     const filename = isFullYear
@@ -70,10 +95,8 @@
     const isFullYear = period === 'Full Year';
     const periodLabel = isFullYear ? 'Annual (Audited)' : period;
     const fileRows = files.map(f => {
-      const isPdf = f.name.toLowerCase().endsWith('.pdf');
-      const icon = isPdf ? '\uD83D\uDCC4' : '\uD83D\uDCE6';
       return `<div style="display:flex;align-items:center;justify-content:space-between;background:#1a2a3a;border-radius:10px;padding:12px 16px;margin-bottom:8px;">
-        <span style="color:#cde;font-size:13px;">${icon}&nbsp;&nbsp;${f.name}</span>
+        <span style="color:#cde;font-size:13px;">&#128196;&nbsp;&nbsp;${f.name}</span>
         <a href="${f.url}" target="_blank" style="background:#2a5fd0;color:#fff;padding:6px 14px;border-radius:7px;font-size:12px;text-decoration:none;white-space:nowrap;margin-left:12px;">&#8659; Open</a>
       </div>`;
     }).join('');
@@ -116,55 +139,60 @@
     return overlay;
   }
 
+  async function fetchFromApi(apiUrl) {
+    // Try direct call first
+    try {
+      const r = await fetch(apiUrl, { headers: { 'Accept': 'application/json' } });
+      if (r.ok) {
+        const data = await r.json();
+        if (data.Results && data.Results.length > 0) return data.Results[0].Attachments || [];
+      }
+    } catch(e) {}
+    // Try CORS proxy
+    try {
+      const r = await fetch(CORS_PROXY + encodeURIComponent(apiUrl));
+      if (r.ok) {
+        const data = await r.json();
+        if (data.Results && data.Results.length > 0) return data.Results[0].Attachments || [];
+      }
+    } catch(e) {}
+    return [];
+  }
+
   async function searchReport(ticker, year, periodRaw) {
     if (!ticker || ticker.trim() === '') { showError('Please enter a ticker symbol'); return; }
     const period = normalizePeriod(periodRaw);
     showLoading();
-    const idxPeriod = PERIOD_MAP[period] || 'TW1';
-    const apiUrl = `${IDX_BASE}/umbraco/Surface/ListedCompany/GetFinancialReport?indexFrom=0&pageSize=10&year=${year}&reportType=rdf&periode=${idxPeriod.toLowerCase()}&kodeEmiten=${ticker.toUpperCase()}`;
-    const isFullYear = period === 'Full Year';
+
+    const apiUrl = buildApiUrl(ticker, year, period);
+    const attachments = await fetchFromApi(apiUrl);
+
     let files = [];
-    try {
-      const response = await fetch(apiUrl, { headers: { 'Accept': 'application/json' } });
-      if (response.ok) {
-        const data = await response.json();
-        if (data.Results && data.Results.length > 0) {
-          const attachments = data.Results[0].Attachments || [];
-          files = attachments
-            .filter(a => {
-              const name = (a.File_Name || a.file_name || '').toLowerCase();
-              if (isFullYear) {
-                return name.endsWith('.pdf') && !name.includes('esg') && !name.includes('annualreport') && !name.includes('ojk');
-              }
-              return name.startsWith('financialstatement') && name.endsWith('.pdf');
-            })
-            .map(a => ({ name: a.File_Name || a.file_name || 'file', url: a.File_Path || a.file_path || '#' }));
-        }
+
+    if (attachments.length > 0) {
+      // First priority: actual company financial report PDF (not system files)
+      const companyReports = attachments
+        .filter(a => isCompanyReport(a.File_Name || a.file_name || ''))
+        .map(a => ({ name: a.File_Name || a.file_name || 'file', url: a.File_Path || a.file_path || '#' }));
+
+      if (companyReports.length > 0) {
+        files = companyReports;
+      } else {
+        // Fallback: take any PDF that is not a zip/xlsx
+        files = attachments
+          .filter(a => {
+            const name = (a.File_Name || a.file_name || '').toLowerCase();
+            return name.endsWith('.pdf');
+          })
+          .map(a => ({ name: a.File_Name || a.file_name || 'file', url: a.File_Path || a.file_path || '#' }));
       }
-    } catch (e) {
-      try {
-        const proxyUrl = CORS_PROXY + encodeURIComponent(apiUrl);
-        const response = await fetch(proxyUrl);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.Results && data.Results.length > 0) {
-            const attachments = data.Results[0].Attachments || [];
-            files = attachments
-              .filter(a => {
-                const name = (a.File_Name || a.file_name || '').toLowerCase();
-                if (isFullYear) {
-                  return name.endsWith('.pdf') && !name.includes('esg') && !name.includes('annualreport') && !name.includes('ojk');
-                }
-                return name.startsWith('financialstatement') && name.endsWith('.pdf');
-              })
-              .map(a => ({ name: a.File_Name || a.file_name || 'file', url: a.File_Path || a.file_path || '#' }));
-          }
-        }
-      } catch (e2) { /* fallback below */ }
     }
+
+    // Last resort fallback: use predictable direct URL
     if (files.length === 0) {
-      const directUrl = buildDirectPdfUrl(ticker, year, period);
+      const directUrl = buildFallbackUrl(ticker, year, period);
       const roman = ROMAN_MAP[period] || 'I';
+      const isFullYear = period === 'Full Year';
       files = [{
         name: isFullYear
           ? `FinancialStatement-${year}-Tahunan-${ticker.toUpperCase()}.pdf`
@@ -172,6 +200,7 @@
         url: directUrl
       }];
     }
+
     if (files.length > 0) {
       showResults(ticker, year, period, files);
     } else {
